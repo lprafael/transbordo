@@ -121,11 +121,11 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
     WHERE fechahoraevento >= '{fecha_inicio}'
       AND fechahoraevento < '{fecha_fin}'
       AND idproducto IN ('4d4f')
-      AND tipoevento = 4 
+      AND tipoevento IN (4, 8) 
       AND (
-          (entidad = '0002' AND númerotransbordos IN (1,5,6,9,10))
+          (entidad = '0002' AND númerotransbordos IN (1, 5, 6, 9, 10))
           OR
-          (entidad = '0003' AND númerotransbordos IN (1,2))
+          (entidad = '0003' AND númerotransbordos IN (1, 2))
       )
     """
     
@@ -160,12 +160,13 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
         latitude,
         longitude,
         consecutivoevento,
-        montoevento
+        montoevento,
+        númerotransbordos as numerotransbordos
     FROM c_transacciones c
     JOIN tmp_target_cards tc ON c.serialmediopago = tc.card_id
     WHERE c.fechahoraevento >= '{fecha_pool_inicio}'
       AND c.fechahoraevento < '{fecha_fin}'
-      AND c.tipoevento IN (4, 8)
+      AND (c.tipoevento IN (4, 8) OR c.númerotransbordos IN (0, 4, 8))
       AND c.montoevento > 0
     """
     
@@ -190,11 +191,25 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
         """Encuentra la validación madre para un transbordo dado"""
         card_history = history_df[history_df['serialmediopago'] == row['serialmediopago']]
         
-        # Filtrar: consecutivo debe estar entre [transbordo - 10, transbordo - 1]
-        valid_madres = card_history[
-            (card_history['consecutivoevento'] >= row['consecutivoevento'] - 10) &
-            (card_history['consecutivoevento'] < row['consecutivoevento'])
-        ]
+        # Determinar el código de númerotransbordos buscado en la madre
+        target_num_trans = None
+        if row['entidad'] == '0002':
+            if row['numerotransbordos'] in [5, 6]:
+                target_num_trans = 4
+            elif row['numerotransbordos'] in [9, 10]:
+                target_num_trans = 8
+        elif row['entidad'] == '0003':
+            # Para EPAS, la madre típicamente tiene númerotransbordos = 0
+            target_num_trans = 0
+
+        # Filtrar: consecutivo debe ser menor al transbordo
+        valid_madres = card_history[card_history['consecutivoevento'] < row['consecutivoevento']]
+        
+        # Si conocemos el código esperado, priorizarlo
+        if target_num_trans is not None:
+            especificas = valid_madres[valid_madres['numerotransbordos'] == target_num_trans]
+            if not especificas.empty:
+                valid_madres = especificas
         
         if len(valid_madres) == 0:
             return pd.Series({
@@ -303,9 +318,9 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
     def calcular_monto_ahorrado(row):
         tarifa = 0
         tipo = str(row['tipotransporte'])
-        if tipo == '1':
-            tarifa = 2300
-        elif tipo == '3':
+        if tipo == '1': # Convencional
+            tarifa = 2400
+        elif tipo == '3': # Diferencial
             tarifa = 3400
         
         # El monto ahorrado es la tarifa menos lo que se pagó (montoevento_transbordo)
@@ -315,34 +330,39 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
     
     # Clasificar tipo de transbordo (1 = primer beneficio, 2 = segundo beneficio)
     df_linked["tipo_transbordo"] = 1
-    # Solo consideramos 2do transbordo si es un código que implica una secuencia de beneficios (6 o 10)
-    df_linked.loc[df_linked["numerotransbordos"].isin([6, 10]), "tipo_transbordo"] = 2
+    # Segundo transbordo: 6 o 10 para TDP, 2 para EPAS
+    df_linked.loc[df_linked["numerotransbordos"].isin([6, 10, 2]), "tipo_transbordo"] = 2
     
-    # Clasificar tipo de descuento basado en numerotransbordos
+    # Clasificar tipo de descuento basado en numerotransbordos y entidad
     def clasificar_descuento(row):
-        """Clasifica el tipo de descuento del transbordo"""
+        """Clasifica el tipo de descuento del transbordo según las reglas por entidad"""
         num_transbordo = row['numerotransbordos']
         entidad = row['entidad_transbordo']
+        ahorro = row['monto_ahorrado']
+        tarifa = 3400 if str(row['tipotransporte']) == '3' else 2400
         
-        if entidad == '0002':  # MAGNO
-            if num_transbordo == 1:
-                return '100% (1er transbordo)'
-            elif num_transbordo == 2:
-                return '50% (1er transbordo)'
-            elif num_transbordo == 5:
-                return '100% + 100%'
+        # Determinar porcentaje
+        pct = "Otro"
+        if ahorro >= tarifa * 0.95:
+            pct = "100%"
+        elif ahorro >= tarifa * 0.45:
+            pct = "50%"
+            
+        if entidad == '0002':  # TDP
+            if num_transbordo == 5:
+                return f'TDP_V1_T1_{pct}'
             elif num_transbordo == 6:
-                return '100% + 50% (2do transbordo)'
+                return f'TDP_V1_T2_{pct}'
             elif num_transbordo == 9:
-                return '50% + 100%'
+                return f'TDP_V2_T1_{pct}'
             elif num_transbordo == 10:
-                return '50% + 50% (2do transbordo)'
-        elif entidad == '0003':  # SAN ISIDRO
+                return f'TDP_V2_T2_{pct}'
+        elif entidad == '0003':  # EPAS
             if num_transbordo == 1:
-                return '100% (1er transbordo)'
+                return f'EPAS_T1_{pct}'
             elif num_transbordo == 2:
-                return '50% (1er transbordo)'
-        
+                return f'EPAS_T2_{pct}'
+                
         return 'Otro'
     
     df_linked['tipo_descuento'] = df_linked.apply(clasificar_descuento, axis=1)
@@ -472,9 +492,18 @@ if 'df_linked' in st.session_state:
             <div style='text-align: center; color: #ff4b4b; background-color: #ffecec; padding: 15px; border-radius: 10px; border: 1px solid #ff4b4b; height: 100%;'>
                 <h5 style='margin: 0; color: #ff4b4b; font-size: 14px;'>Tarjetas con > 2 viajes/día</h5>
                 <p style='margin: 0; font-size: 28px; font-weight: bold;'>{tarjetas_con_exceso:,}</p>
-                <small style='color: #ff4b4b;'>⚠️ Exceso de transbordos</small>
+                <small style='color: #ff4b4b;'>⚠️ Uso excesivo del beneficio</small>
             </div>
         """, unsafe_allow_html=True)
+        
+    # Mostrar detalle de tarjetas con exceso si el usuario lo solicita o si hay casos
+    if tarjetas_con_exceso > 0:
+        with st.expander("🚨 Ver detalle de tarjetas con exceso de transbordos (> 2 viajes/día)"):
+            exceso_df = viajes_con_transbordo_por_tarjeta[viajes_con_transbordo_por_tarjeta > 2].reset_index()
+            exceso_df.columns = ['Serial Tarjeta', 'Cant. Viajes con Transbordo']
+            # Marcar específicamente las que tienen > 3 como pidió el usuario
+            exceso_df['Nivel Alerta'] = exceso_df['Cant. Viajes con Transbordo'].apply(lambda x: 'ALTA (>3)' if x > 3 else 'MODERADA (3)')
+            st.dataframe(exceso_df.sort_values('Cant. Viajes con Transbordo', ascending=False), use_container_width=True, hide_index=True)
     
     st.markdown("---")
     
@@ -507,50 +536,66 @@ if 'df_linked' in st.session_state:
     # ======================================================
     # TIPOS DE DESCUENTO
     # ======================================================
-    st.subheader("💰 Tipos de Descuento")
-    
+    # Obtener el recuento de descuentos
     descuentos_count = df['tipo_descuento'].value_counts()
     
-    # Crear columnas dinámicamente según los tipos de descuento encontrados
-    tipos_descuento_orden = ['100% (1er transbordo)', '50% (1er transbordo)', '100% + 100%', '100% + 50% (2do transbordo)', '50% + 100%', '50% + 50% (2do transbordo)']
-    tipos_encontrados = [t for t in tipos_descuento_orden if t in descuentos_count.index]
+    col_tdp1, col_tdp2, col_epas, col_total = st.columns(4)
     
-    # Diccionario de tooltips para cada tipo de descuento
-    tooltips_descuentos = {
-        '100% (1er transbordo)': '🎁 Primer beneficio de transbordo con descuento total. El usuario no paga nada por este cambio de bus.',
-        '50% (1er transbordo)': '💵 Primer beneficio de transbordo con 50% de descuento (típico cuando no hubo descuento previo o en empresas sin transbordo gratuito).',
-        '100% + 100%': '🎁🎁 Ambos beneficios de transbordo con descuento total. El usuario realiza dos cambios de bus sin costo adicional.',
-        '100% + 50% (2do transbordo)': '🎁💵 Segundo beneficio de transbordo con 50% de descuento, precedido por un primero con 100%.',
-        '50% + 100%': '💵🎁 Primer beneficio con 50% y segundo con 100%. Combinación de beneficios para dos transbordos.',
-        '50% + 50% (2do transbordo)': '💵💵 Segundo beneficio de transbordo con 50% de descuento, precedido por un primero también con 50%.'
-    }
+    # Pre-calcular valores para sumatorias
+    v1_t1_50 = descuentos_count.get('TDP_V1_T1_50%', 0)
+    v1_t1_100 = descuentos_count.get('TDP_V1_T1_100%', 0)
+    v1_t2_50 = descuentos_count.get('TDP_V1_T2_50%', 0)
+    v1_t2_100 = descuentos_count.get('TDP_V1_T2_100%', 0)
     
-    if len(tipos_encontrados) > 0:
-        cols = st.columns(min(len(tipos_encontrados), 4))
-        for idx, tipo in enumerate(tipos_encontrados[:4]):
-            with cols[idx]:
-                cantidad = descuentos_count.get(tipo, 0)
-                porcentaje = (cantidad / len(df) * 100) if len(df) > 0 else 0
-                st.metric(
-                    tipo,
-                    f"{cantidad:,}",
-                    f"{porcentaje:.1f}%",
-                    help=tooltips_descuentos.get(tipo, "Tipo de descuento aplicado en el transbordo")
-                )
-        
-        # Si hay más de 4 tipos, mostrar en segunda fila
-        if len(tipos_encontrados) > 4:
-            cols2 = st.columns(min(len(tipos_encontrados) - 4, 4))
-            for idx, tipo in enumerate(tipos_encontrados[4:8]):
-                with cols2[idx]:
-                    cantidad = descuentos_count.get(tipo, 0)
-                    porcentaje = (cantidad / len(df) * 100) if len(df) > 0 else 0
-                    st.metric(
-                        tipo,
-                        f"{cantidad:,}",
-                        f"{porcentaje:.1f}%",
-                        help=tooltips_descuentos.get(tipo, "Tipo de descuento aplicado en el transbordo")
-                    )
+    v2_t1_50 = descuentos_count.get('TDP_V2_T1_50%', 0)
+    v2_t1_100 = descuentos_count.get('TDP_V2_T1_100%', 0)
+    v2_t2_50 = descuentos_count.get('TDP_V2_T2_50%', 0)
+    v2_t2_100 = descuentos_count.get('TDP_V2_T2_100%', 0)
+    
+    epas_t1_50 = descuentos_count.get('EPAS_T1_50%', 0)
+    epas_t1_100 = descuentos_count.get('EPAS_T1_100%', 0)
+    epas_t2_50 = descuentos_count.get('EPAS_T2_50%', 0)
+    epas_t2_100 = descuentos_count.get('EPAS_T2_100%', 0)
+
+    with col_tdp1:
+        st.markdown("### 🟦 Viaje 1 (TDP)")
+        st.metric("1er Transbordo - 50%", f"{v1_t1_50:,}")
+        st.metric("1er Transbordo - 100%", f"{v1_t1_100:,}")
+        st.metric("2do Transbordo - 50%", f"{v1_t2_50:,}")
+        st.metric("2do Transbordo - 100%", f"{v1_t2_100:,}")
+
+    with col_tdp2:
+        st.markdown("### 🟩 Viaje 2 (TDP)")
+        st.metric("1er Transbordo - 50%", f"{v2_t1_50:,}")
+        st.metric("1er Transbordo - 100%", f"{v2_t1_100:,}")
+        st.metric("2do Transbordo - 50%", f"{v2_t2_50:,}")
+        st.metric("2do Transbordo - 100%", f"{v2_t2_100:,}")
+
+    with col_epas:
+        st.markdown("### 🟧 Viaje X (EPAS)")
+        st.metric("1er Transbordo - 50%", f"{epas_t1_50:,}")
+        st.metric("1er Transbordo - 100%", f"{epas_t1_100:,}")
+        st.metric("2do Transbordo - 50%", f"{epas_t2_50:,}")
+        st.metric("2do Transbordo - 100%", f"{epas_t2_100:,}")
+    
+    with col_total:
+        st.markdown("### 📈 Totales")
+        st.metric("Total 1er T - 50%", f"{(v1_t1_50 + v2_t1_50 + epas_t1_50):,}")
+        st.metric("Total 1er T - 100%", f"{(v1_t1_100 + v2_t1_100 + epas_t1_100):,}")
+        st.metric("Total 2do T - 50%", f"{(v1_t2_50 + v2_t2_50 + epas_t2_50):,}")
+        st.metric("Total 2do T - 100%", f"{(v1_t2_100 + v2_t2_100 + epas_t2_100):,}")
+
+    st.markdown("---")
+    # Mostrar "Otro" y permitir análisis
+    otros_count = descuentos_count.get('Otro', 0)
+    col_otro, col_btn = st.columns([1, 3])
+    with col_otro:
+        st.metric("Anomalías (Otro)", f"{otros_count:,}")
+    
+    if otros_count > 0:
+        with st.expander("🔍 Analizar registros clasificados como 'Otro'"):
+            df_otros = df[df['tipo_descuento'] == 'Otro'][['serialmediopago', 'fecha_transbordo', 'entidad_transbordo', 'numerotransbordos', 'montoevento_transbordo', 'monto_ahorrado']]
+            st.dataframe(df_otros, use_container_width=True, hide_index=True)
     
     st.markdown("---")
     

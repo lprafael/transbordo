@@ -1,0 +1,214 @@
+{
+  "name": "Sync Lluvia Open-Meteo a Postgres",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "hours": 3,
+              "minutes": 15
+            }
+          ]
+        }
+      },
+      "id": "67f1b2c3-4d5e-4f6a-8b9c-0d1e2f3a4b5c",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        400,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Configuración de coordenadas (Departamento Central)\nconst locations = [\n    {name: \"Areguá\", lat: -25.3125, lon: -57.3847},\n    {name: \"Capiatá\", lat: -25.3552, lon: -57.4454},\n    {name: \"Fernando de la Mora\", lat: -25.3386, lon: -57.5217},\n    {name: \"Guarambaré\", lat: -25.4910, lon: -57.4557},\n    {name: \"Itá\", lat: -25.5005, lon: -57.3672},\n    {name: \"Itauguá\", lat: -25.3926, lon: -57.3542},\n    {name: \"J. Augusto Saldívar\", lat: -25.4446, lon: -57.4344},\n    {name: \"Lambaré\", lat: -25.3468, lon: -57.6065},\n    {name: \"Limpio\", lat: -25.1661, lon: -57.4856},\n    {name: \"Luque\", lat: -25.2700, lon: -57.4872},\n    {name: \"Mariano Roque Alonso\", lat: -25.2079, lon: -57.5320},\n    {name: \"Ñemby\", lat: -25.3949, lon: -57.5357},\n    {name: \"Nueva Italia\", lat: -25.6108, lon: -57.4656},\n    {name: \"San Antonio\", lat: -25.4213, lon: -57.5473},\n    {name: \"San Lorenzo\", lat: -25.3397, lon: -57.5088},\n    {name: \"Villa Elisa\", lat: -25.3676, lon: -57.5927},\n    {name: \"Villeta\", lat: -25.4949, lon: -57.5584},\n    {name: \"Ypacaraí\", lat: -25.4078, lon: -57.2889},\n    {name: \"Ypané\", lat: -25.4500, lon: -57.5300}\n];\n\n// Obtener fecha de ayer por defecto\nlet startDate, endDate;\nconst today = new Date();\nconst yesterday = new Date(today);\nyesterday.setDate(yesterday.getDate() - 1);\nstartDate = yesterday.toISOString().split('T')[0];\nendDate = startDate;\n\nreturn {\n  startDate,\n  endDate,\n  lats: locations.map(l => l.lat).join(','),\n  lons: locations.map(l => l.lon).join(',')\n};"
+      },
+      "id": "a1b2c3d4-e5f6-4a1b-9c2d-3e4f5a6b7c8d",
+      "name": "Date Config",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        620,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://archive-api.open-meteo.com/v1/era5",
+        "sendQueryParams": true,
+        "queryParams": {
+          "parameters": [
+            {
+              "name": "latitude",
+              "value": "={{ $json.lats }}"
+            },
+            {
+              "name": "longitude",
+              "value": "={{ $json.lons }}"
+            },
+            {
+              "name": "start_date",
+              "value": "={{ $json.startDate }}"
+            },
+            {
+              "name": "end_date",
+              "value": "={{ $json.endDate }}"
+            },
+            {
+              "name": "hourly",
+              "value": "rain"
+            },
+            {
+              "name": "timezone",
+              "value": "auto"
+            }
+          ]
+        },
+        "options": {
+          "retryOnFail": true,
+          "maxRetries": 3,
+          "waitBetweenRetries": 5000
+        }
+      },
+      "id": "b1c2d3e4-f5a6-4b1c-9d2e-3f4a5b6c7d8e",
+      "name": "HTTP Request Open-Meteo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        840,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = $input.all();\nconst series = Array.isArray(results[0].json) ? results[0].json : [results[0].json];\n\nif (!series[0].hourly) return [];\n\nconst times = series[0].hourly.time;\nconst uRecord = 2.5;\nconst uIntense = 15;\nconst output = [];\n\ntimes.forEach((t, i) => {\n    // Buscar lluvia máxima entre todas las locaciones\n    let maxRain = 0;\n    series.forEach(locationData => {\n        const val = locationData.hourly.rain[i];\n        if (val > maxRain) maxRain = val;\n    });\n\n    if (maxRain > uRecord) {\n        const dtInicio = new Date(t);\n        const dtFin = new Date(dtInicio.getTime() + 60 * 60 * 1000);\n\n        output.push({\n            json: {\n                fecha_evento: t.split('T')[0],\n                hora_inicio: t.split('T')[1].substring(0, 5),\n                hora_fin: dtFin.toTimeString().substring(0, 5),\n                es_lluvia_intensa: maxRain >= uIntense,\n                registro_comprobado: false,\n                factor_ajuste: 0,\n                fuente_registro: \"n8n (Open-Meteo Archive)\",\n                mm_caidos: parseFloat(maxRain.toFixed(2)),\n                notas: `Lluvia MAX Central (n8n): ${maxRain.toFixed(2)} mm`\n            }\n        });\n    }\n});\n\nreturn output;"
+      },
+      "id": "c1d2e3f4-a5b6-4c1d-9e2f-3a4b5c6d7e8f",
+      "name": "Process Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "control_metricas",
+        "table": "t_casuisticas_lluvia",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fecha_evento": "={{ $json.fecha_evento }}",
+            "hora_inicio": "={{ $json.hora_inicio }}",
+            "hora_fin": "={{ $json.hora_fin }}",
+            "es_lluvia_intensa": "={{ $json.es_lluvia_intensa }}",
+            "registro_comprobado": "={{ $json.registro_comprobado }}",
+            "factor_ajuste": "={{ $json.factor_ajuste }}",
+            "fuente_registro": "={{ $json.fuente_registro }}",
+            "mm_caidos": "={{ $json.mm_caidos }}",
+            "notas": "={{ $json.notas }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "d1e2f3a4-b5c6-4d1e-9f2a-3b4c5d6e7f8a",
+      "name": "PostgreSQL Insert",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        1280,
+        300
+      ],
+      "onError": "oops",
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_POR_TU_ID_DE_CREDENCIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "insert",
+        "schema": "alertas",
+        "table": "control_alertas",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "fuente": "n8n_lluvia_sync",
+            "fechahora_alerta": "={{ new Date().toISOString() }}",
+            "id_tipo_alerta": 2,
+            "verificado": false,
+            "corregido": false,
+            "descripcion_incidente": "={{ $error.message + '\\n' + $error.stack }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "e1f2a3b4-c5d6-4e1f-9a2b-3c4d5e6f7a8b",
+      "name": "Log Error to Alertas",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        1500,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REEMPLAZAR_POR_TU_ID_DE_CREDENCIAL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Date Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Date Config": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request Open-Meteo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request Open-Meteo": {
+      "main": [
+        [
+          {
+            "node": "Process Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Data": {
+      "main": [
+        [
+          {
+            "node": "PostgreSQL Insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {}
+}

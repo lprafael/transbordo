@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  dashboard-transbordos:
+    build: .
+    container_name: dashboard_transbordos
+    ports:
+      - "8501:8501"
+    restart: always
+    volumes:
+      - .:/app
+    environment:
+      - TZ=America/Asuncion
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_ENABLE_CORS=false
+      - STREAMLIT_SERVER_ENABLE_XSRF_PROTECTION=false
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=none
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0

@@ -1,3 +1,7 @@
+"""
+Análisis de Transbordos - Aplicación Streamlit.
+Para ejecutar: streamlit run analisis_transbordos_streamlit.py
+"""
 import streamlit as st
 import psycopg2
 import pandas as pd
@@ -7,6 +11,114 @@ import time
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
+
+# ======================================================
+# FUNCIONES DE PROCESAMIENTO PARALELO (TOP LEVEL)
+# ======================================================
+def worker_matching_logic(chunk_df, h_dict):
+    """
+    Función que ejecutan los workers en paralelo. 
+    Se encarga de buscar la validación madre para un conjunto de transbordos.
+    """
+    import pandas as pd
+    results_list = []
+    
+    for _, row in chunk_df.iterrows():
+        card_id = row['serialmediopago']
+        
+        # Obtener historial de la tarjeta desde el diccionario pre-agrupado
+        card_history_data = h_dict.get(card_id, [])
+        if not card_history_data:
+            results_list.append({
+                'idsam_madre': None, 'fechahoraevento_madre': None, 
+                'entidad_madre': None, 'idrutaestacion_madre': None,
+                'latitude_madre': None, 'longitude_madre': None,
+                'consecutivoevento_madre': None, 'montoevento_madre': None
+            })
+            continue
+
+        # Determinar target_num_trans según lógica de negocio
+        target_num_trans = None
+        if row['entidad'] == '0002':
+            if row['numerotransbordos'] in [5, 6]: target_num_trans = 4
+            elif row['numerotransbordos'] in [9, 10]: target_num_trans = 8
+        elif row['entidad'] == '0003': 
+            target_num_trans = 0
+
+        # Filtrar historial de la tarjeta: consecutivo debe ser menor
+        # Convertimos a DF temporalmente para esta tarjeta (es rápido ya que son pocos registros)
+        card_history_df = pd.DataFrame(card_history_data)
+        valid_madres = card_history_df[card_history_df['consecutivoevento'] < row['consecutivoevento']]
+        
+        if target_num_trans is not None and not valid_madres.empty:
+            especificas = valid_madres[valid_madres['numerotransbordos'] == target_num_trans]
+            if not especificas.empty:
+                valid_madres = especificas
+        
+        if valid_madres.empty:
+            results_list.append({
+                'idsam_madre': None, 'fechahoraevento_madre': None, 
+                'entidad_madre': None, 'idrutaestacion_madre': None,
+                'latitude_madre': None, 'longitude_madre': None,
+                'consecutivoevento_madre': None, 'montoevento_madre': None
+            })
+        else:
+            # Tomar la más reciente (mayor consecutivo)
+            madre = valid_madres.sort_values('consecutivoevento', ascending=False).iloc[0]
+            results_list.append({
+                'idsam_madre': madre['idsam'],
+                'fechahoraevento_madre': madre['fechahoraevento'],
+                'entidad_madre': madre['entidad'],
+                'idrutaestacion_madre': madre['idrutaestacion'],
+                'latitude_madre': madre['latitude'],
+                'longitude_madre': madre['longitude'],
+                'consecutivoevento_madre': madre['consecutivoevento'],
+                'montoevento_madre': madre['montoevento']
+            })
+            
+    return pd.DataFrame(results_list)
+
+def vectorized_clasificar_descuento(df):
+    """Clasificación de descuentos optimizada vectorialmente"""
+    import numpy as np
+    # Auxiliares
+    tarifa = np.where(df['tipotransporte_str'] == '3', 3400, 2400)
+    porcentaje = np.where(df['monto_ahorrado'] >= tarifa * 0.95, "100%", 
+                         np.where(df['monto_ahorrado'] >= tarifa * 0.45, "50%", "Otro"))
+    
+    conds = [
+        (df['entidad_transbordo'] == '0002') & (df['numerotransbordos'] == 5),
+        (df['entidad_transbordo'] == '0002') & (df['numerotransbordos'] == 6),
+        (df['entidad_transbordo'] == '0002') & (df['numerotransbordos'] == 9),
+        (df['entidad_transbordo'] == '0002') & (df['numerotransbordos'] == 10),
+        (df['entidad_transbordo'] == '0003') & (df['numerotransbordos'] == 1),
+        (df['entidad_transbordo'] == '0003') & (df['numerotransbordos'] == 2)
+    ]
+    
+    prefixes = ['TDP_V1_T1_', 'TDP_V1_T2_', 'TDP_V2_T1_', 'TDP_V2_T2_', 'EPAS_T1_', 'EPAS_T2_']
+    
+    results = np.full(len(df), "Otro", dtype=object)
+    for cond, prefix in zip(conds, prefixes):
+        results[cond] = prefix + porcentaje[cond]
+    
+    return results
+
+def run_parallel_matching(transfers_df, h_dict, n_workers=6, progress_bar=None):
+    """Ejecuta la lógica de matching en paralelo utilizando ProcessPoolExecutor"""
+    chunks = np.array_split(transfers_df, n_workers)
+    
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = [executor.submit(worker_matching_logic, chunk, h_dict) for chunk in chunks]
+        
+        results = []
+        for i, future in enumerate(futures):
+            results.append(future.result())
+            if progress_bar:
+                progress_bar.progress(70 + int(((i+1) / n_workers) * 10))
+        
+        return pd.concat(results, ignore_index=True)
 
 # ======================================================
 # CONFIGURACIÓN DE PÁGINA
@@ -166,8 +278,9 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
     JOIN tmp_target_cards tc ON c.serialmediopago = tc.card_id
     WHERE c.fechahoraevento >= '{fecha_pool_inicio}'
       AND c.fechahoraevento < '{fecha_fin}'
-      AND (c.tipoevento IN (4, 8) OR c.númerotransbordos IN (0, 4, 8))
-      AND c.montoevento > 0
+      AND c.tipoevento IN (4, 8)
+      AND c.númerotransbordos IN (0, 1, 2, 4, 5, 6, 8, 9, 10)
+      AND c.montoevento >= 0
     """
     
     df_history = pd.read_sql(query_history, conn_trx)
@@ -177,88 +290,31 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
     st.success(f"✅ Historial cargado: **{len(df_history):,}** registros de **{len(unique_cards):,}** tarjetas únicas")
     
     # ======================================================
-    # 3) VINCULACIÓN DE MADRES (MÉTODO ALTERNATIVO)
+    # 3) VINCULACIÓN DE MADRES (OPTIMIZADO CON 6 WORKERS)
     # ======================================================
-    status_text.text("🔗 Vinculando transbordos con validaciones madre...")
+    status_text.text("🔗 Preparando vinculación de transbordos...")
     progress_bar.progress(70)
     
     # Preparar datos
     df_transfers['consecutivoevento'] = df_transfers['consecutivoevento'].astype('int64')
     df_history['consecutivoevento'] = df_history['consecutivoevento'].astype('int64')
     
-    # Crear función para encontrar la madre de cada transbordo
-    def find_madre(row, history_df):
-        """Encuentra la validación madre para un transbordo dado"""
-        card_history = history_df[history_df['serialmediopago'] == row['serialmediopago']]
-        
-        # Determinar el código de númerotransbordos buscado en la madre
-        target_num_trans = None
-        if row['entidad'] == '0002':
-            if row['numerotransbordos'] in [5, 6]:
-                target_num_trans = 4
-            elif row['numerotransbordos'] in [9, 10]:
-                target_num_trans = 8
-        elif row['entidad'] == '0003':
-            # Para EPAS, la madre típicamente tiene númerotransbordos = 0
-            target_num_trans = 0
-
-        # Filtrar: consecutivo debe ser menor al transbordo
-        valid_madres = card_history[card_history['consecutivoevento'] < row['consecutivoevento']]
-        
-        # Si conocemos el código esperado, priorizarlo
-        if target_num_trans is not None:
-            especificas = valid_madres[valid_madres['numerotransbordos'] == target_num_trans]
-            if not especificas.empty:
-                valid_madres = especificas
-        
-        if len(valid_madres) == 0:
-            return pd.Series({
-                'idsam_madre': None,
-                'fechahoraevento_madre': None,
-                'entidad_madre': None,
-                'idrutaestacion_madre': None,
-                'latitude_madre': None,
-                'longitude_madre': None,
-                'consecutivoevento_madre': None,
-                'montoevento_madre': None
-            })
-        
-        # Tomar la más cercana (mayor consecutivo)
-        madre = valid_madres.sort_values('consecutivoevento', ascending=False).iloc[0]
-        
-        return pd.Series({
-            'idsam_madre': madre['idsam'],
-            'fechahoraevento_madre': madre['fechahoraevento'],
-            'entidad_madre': madre['entidad'],
-            'idrutaestacion_madre': madre['idrutaestacion'],
-            'latitude_madre': madre['latitude'],
-            'longitude_madre': madre['longitude'],
-            'consecutivoevento_madre': madre['consecutivoevento'],
-            'montoevento_madre': madre['montoevento']
-        })
+    status_text.text("📦 Agrupando historial de tarjetas para búsqueda rápida...")
+    # Pre-agrupar historial por tarjeta para evitar filtrado repetitivo
+    # Ordenamos por consecutivoevento descendente para que la más reciente sea la primera
+    history_dict = {
+        card: group.to_dict('records') 
+        for card, group in df_history.groupby('serialmediopago')
+    }
     
-    # Aplicar la función (con barra de progreso)
-    status_text.text("🔗 Buscando validaciones madre (esto puede tomar un momento)...")
-    
-    # Procesar en lotes para mejor rendimiento
-    batch_size = 500
-    results = []
-    
-    for i in range(0, len(df_transfers), batch_size):
-        batch = df_transfers.iloc[i:i+batch_size]
-        batch_results = batch.apply(lambda row: find_madre(row, df_history), axis=1)
-        results.append(batch_results)
-        
-        # Actualizar progreso
-        progress = 70 + int((i / len(df_transfers)) * 10)
-        progress_bar.progress(min(progress, 79))
+    status_text.text("🚀 Ejecutando vinculación paralela con 6 workers...")
+    madre_info = run_parallel_matching(df_transfers, history_dict, n_workers=6, progress_bar=progress_bar)
     
     # Combinar resultados
-    madre_info = pd.concat(results, ignore_index=True)
     df_linked = pd.concat([df_transfers.reset_index(drop=True), madre_info], axis=1)
     
     # DEBUG: Mostrar columnas disponibles
-    st.write("**Columnas disponibles:**", df_linked.columns.tolist())
+    # st.write("**Columnas disponibles:**", df_linked.columns.tolist())
     
     # Renombrar columnas (df_transfers no tiene sufijos, solo madre_info)
     rename_dict = {}
@@ -291,7 +347,7 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
     
     df_linked = df_linked.rename(columns=rename_dict)
     
-    st.write("**Columnas después de renombrar:**", df_linked.columns.tolist())
+    # st.write("**Columnas después de renombrar:**", df_linked.columns.tolist())
     
     progress_bar.progress(80)
     
@@ -313,59 +369,26 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
     # ======================================================
     # NUEVA LÓGICA: CÁLCULO DE MONTO AHORRADO
     # ======================================================
-    # tipotransporte = 1 -> tarifa 2300 (Convencional)
+    # tipotransporte = 1 -> tarifa 2400 (Convencional)
     # tipotransporte = 3 -> tarifa 3400 (Diferencial)
-    def calcular_monto_ahorrado(row):
-        tarifa = 0
-        tipo = str(row['tipotransporte'])
-        if tipo == '1': # Convencional
-            tarifa = 2400
-        elif tipo == '3': # Diferencial
-            tarifa = 3400
-        
-        # El monto ahorrado es la tarifa menos lo que se pagó (montoevento_transbordo)
-        return max(0, tarifa - row['montoevento_transbordo'])
-
-    df_linked['monto_ahorrado'] = df_linked.apply(calcular_monto_ahorrado, axis=1)
+    
+    # Vectorización de monto ahorrado
+    df_linked['monto_ahorrado'] = 0
+    df_linked['tipotransporte_str'] = df_linked['tipotransporte'].astype(str)
+    
+    mask_conv = df_linked['tipotransporte_str'] == '1'
+    mask_dif = df_linked['tipotransporte_str'] == '3'
+    
+    df_linked.loc[mask_conv, 'monto_ahorrado'] = (2400 - df_linked['montoevento_transbordo']).clip(lower=0)
+    df_linked.loc[mask_dif, 'monto_ahorrado'] = (3400 - df_linked['montoevento_transbordo']).clip(lower=0)
     
     # Clasificar tipo de transbordo (1 = primer beneficio, 2 = segundo beneficio)
     df_linked["tipo_transbordo"] = 1
     # Segundo transbordo: 6 o 10 para TDP, 2 para EPAS
     df_linked.loc[df_linked["numerotransbordos"].isin([6, 10, 2]), "tipo_transbordo"] = 2
     
-    # Clasificar tipo de descuento basado en numerotransbordos y entidad
-    def clasificar_descuento(row):
-        """Clasifica el tipo de descuento del transbordo según las reglas por entidad"""
-        num_transbordo = row['numerotransbordos']
-        entidad = row['entidad_transbordo']
-        ahorro = row['monto_ahorrado']
-        tarifa = 3400 if str(row['tipotransporte']) == '3' else 2400
-        
-        # Determinar porcentaje
-        pct = "Otro"
-        if ahorro >= tarifa * 0.95:
-            pct = "100%"
-        elif ahorro >= tarifa * 0.45:
-            pct = "50%"
-            
-        if entidad == '0002':  # TDP
-            if num_transbordo == 5:
-                return f'TDP_V1_T1_{pct}'
-            elif num_transbordo == 6:
-                return f'TDP_V1_T2_{pct}'
-            elif num_transbordo == 9:
-                return f'TDP_V2_T1_{pct}'
-            elif num_transbordo == 10:
-                return f'TDP_V2_T2_{pct}'
-        elif entidad == '0003':  # EPAS
-            if num_transbordo == 1:
-                return f'EPAS_T1_{pct}'
-            elif num_transbordo == 2:
-                return f'EPAS_T2_{pct}'
-                
-        return 'Otro'
-    
-    df_linked['tipo_descuento'] = df_linked.apply(clasificar_descuento, axis=1)
+    df_linked['tipo_descuento'] = vectorized_clasificar_descuento(df_linked)
+    df_linked = df_linked.drop(columns=['tipotransporte_str'])
     
     progress_bar.progress(85)
     
@@ -422,10 +445,19 @@ if st.sidebar.button("🔄 Procesar Datos", type="primary"):
     
     tiempo_total = time.time() - inicio
     
+    # Enriquecer df_history con empresas antes de guardar
+    df_history = df_history.merge(
+        df_empresas,
+        left_on="idrutaestacion",
+        right_on="ruta_hex",
+        how="left"
+    ).drop(columns=["ruta_hex"], errors='ignore')
+
     # ======================================================
     # GUARDAR EN SESSION STATE
     # ======================================================
     st.session_state['df_linked'] = df_linked
+    st.session_state['df_history'] = df_history
     st.session_state['fecha_proceso'] = fecha_inicio
     st.session_state['tiempo_proceso'] = tiempo_total
     
@@ -503,7 +535,52 @@ if 'df_linked' in st.session_state:
             exceso_df.columns = ['Serial Tarjeta', 'Cant. Viajes con Transbordo']
             # Marcar específicamente las que tienen > 3 como pidió el usuario
             exceso_df['Nivel Alerta'] = exceso_df['Cant. Viajes con Transbordo'].apply(lambda x: 'ALTA (>3)' if x > 3 else 'MODERADA (3)')
+            
             st.dataframe(exceso_df.sort_values('Cant. Viajes con Transbordo', ascending=False), use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            st.subheader("🕵️ Historial Detallado de Tarjetas en Alerta")
+            
+            # Selector de tarjeta para ver su historia
+            tarjeta_analizar = st.selectbox(
+                "Seleccione una tarjeta para ver su línea de tiempo completa:",
+                options=exceso_df['Serial Tarjeta'].unique()
+            )
+            
+            if tarjeta_analizar and 'df_history' in st.session_state:
+                h_df = st.session_state['df_history']
+                tarjeta_history = h_df[h_df['serialmediopago'] == tarjeta_analizar].copy()
+                tarjeta_history = tarjeta_history.sort_values('fechahoraevento')
+                
+                # Clasificar eventos para mejor visualización
+                def etiquetar_evento(row):
+                    nt = row['numerotransbordos']
+                    ent = row['entidad']
+                    if ent == '0002': # TDP
+                        if nt == 4: return "🏠 Madre (Viaje 1)"
+                        if nt == 8: return "🏠 Madre (Viaje 2)"
+                        if nt == 5: return "🚌 1er Transbordo (V1)"
+                        if nt == 6: return "🚌 2do Transbordo (V1)"
+                        if nt == 9: return "🚌 1er Transbordo (V2)"
+                        if nt == 10: return "🚌 2do Transbordo (V2)"
+                    elif ent == '0003': # EPAS
+                        if nt == 0: return "🏠 Madre (Base)"
+                        if nt == 1: return "🚌 1er Transbordo"
+                        if nt == 2: return "🚌 2do Transbordo"
+                    return "💳 Validación Base"
+                
+                tarjeta_history['Tipo Evento'] = tarjeta_history.apply(etiquetar_evento, axis=1)
+                
+                # Formatear para mostrar
+                display_cols = ['fechahoraevento', 'Tipo Evento', 'idsam', 'empresa', 'montoevento', 'numerotransbordos', 'consecutivoevento']
+                st.table(tarjeta_history[display_cols].rename(columns={
+                    'fechahoraevento': 'Fecha/Hora',
+                    'idsam': 'ID SAM',
+                    'empresa': 'Empresa/Bus',
+                    'montoevento': 'Monto',
+                    'numerotransbordos': 'Cód. Transb.',
+                    'consecutivoevento': 'Consecutivo'
+                }))
     
     st.markdown("---")
     
@@ -593,9 +670,55 @@ if 'df_linked' in st.session_state:
         st.metric("Anomalías (Otro)", f"{otros_count:,}")
     
     if otros_count > 0:
-        with st.expander("🔍 Analizar registros clasificados como 'Otro'"):
+        with st.expander("🔍 Analizar registros clasificados como 'Otro' (Anomalías)"):
             df_otros = df[df['tipo_descuento'] == 'Otro'][['serialmediopago', 'fecha_transbordo', 'entidad_transbordo', 'numerotransbordos', 'montoevento_transbordo', 'monto_ahorrado']]
             st.dataframe(df_otros, use_container_width=True, hide_index=True)
+            
+            st.markdown("---")
+            st.subheader("🕵️ Análisis Forense de Anomalías")
+            
+            tarjeta_otro = st.selectbox(
+                "Seleccione una tarjeta anómala para analizar su contexto:",
+                options=df_otros['serialmediopago'].unique(),
+                key="sb_anomalias"
+            )
+            
+            if tarjeta_otro and 'df_history' in st.session_state:
+                h_df = st.session_state['df_history']
+                t_history = h_df[h_df['serialmediopago'] == tarjeta_otro].copy()
+                t_history = t_history.sort_values('fechahoraevento')
+                
+                # Usar la misma lógica de etiquetado
+                def etiquetar_evento_otro(row):
+                    nt = row['numerotransbordos']
+                    ent = row['entidad']
+                    if ent == '0002': # TDP
+                        if nt == 4: return "🏠 Madre (Viaje 1)"
+                        if nt == 8: return "🏠 Madre (Viaje 2)"
+                        if nt == 5: return "🚌 1er Transbordo (V1)"
+                        if nt == 6: return "🚌 2do Transbordo (V1)"
+                        if nt == 9: return "🚌 1er Transbordo (V2)"
+                        if nt == 10: return "🚌 2do Transbordo (V2)"
+                    elif ent == '0003': # EPAS
+                        if nt == 0: return "🏠 Madre (Base)"
+                        if nt == 1: return "🚌 1er Transbordo"
+                        if nt == 2: return "🚌 2do Transbordo"
+                    return f"❓ Evento Desconocido (Cód: {nt})"
+                
+                t_history['Tipo Evento'] = t_history.apply(etiquetar_evento_otro, axis=1)
+                
+                st.table(t_history[['fechahoraevento', 'Tipo Evento', 'idsam', 'empresa', 'montoevento', 'numerotransbordos']].rename(columns={
+                    'fechahoraevento': 'Fecha/Hora',
+                    'idsam': 'ID SAM',
+                    'empresa': 'Empresa/Bus',
+                    'montoevento': 'Monto',
+                    'numerotransbordos': 'Cód. Transb.'
+                }))
+                
+                st.info("💡 **¿Por qué es una anomalía?** Generalmente ocurre cuando:\n"
+                        "1. El código de transbordo no coincide con la entidad (ej: código 1 en TDP).\n"
+                        "2. El monto ahorrado no es exactamente 50% o 100% de la tarifa oficial.\n"
+                        "3. Es un código no contemplado en las reglas de viaje 1 o 2.")
     
     st.markdown("---")
     

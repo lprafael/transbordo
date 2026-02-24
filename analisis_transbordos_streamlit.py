@@ -13,6 +13,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from concurrent.futures import ProcessPoolExecutor
 import multiprocessing
+import os
+from dotenv import load_dotenv
+
+# Cargar variables de entorno
+load_dotenv()
 
 # ======================================================
 # FUNCIONES DE PROCESAMIENTO PARALELO (TOP LEVEL)
@@ -137,20 +142,20 @@ st.markdown("---")
 # CONEXIONES
 # ======================================================
 DB_TRANSACCIONES = {
-    "host": "replicatransacciones.vmt.gov.py",
-    "port": "5435",
-    "dbname": "transacciones",
-    "user": "devmt",
-    "password": "FootgearBlinkedDigFreewillStricken",
+    "host": os.getenv("DB_TRANSACCIONES_HOST", "replicatransacciones.vmt.gov.py"),
+    "port": os.getenv("DB_TRANSACCIONES_PORT", "5435"),
+    "dbname": os.getenv("DB_TRANSACCIONES_NAME", "transacciones"),
+    "user": os.getenv("DB_TRANSACCIONES_USER", "devmt"),
+    "password": os.getenv("DB_TRANSACCIONES_PASS", "FootgearBlinkedDigFreewillStricken"),
     "options": "-c statement_timeout=0"
 }
 
 DB_MONITOREO = {
-    "host": "168.90.177.232",
-    "port": "2024",
-    "dbname": "bbdd-monitoreo-cid",
-    "user": "FPorta",
-    "password": "portaf2024"
+    "host": os.getenv("DB_MONITOREO_HOST", "168.90.177.232"),
+    "port": os.getenv("DB_MONITOREO_PORT", "2024"),
+    "dbname": os.getenv("DB_MONITOREO_NAME", "bbdd-monitoreo-cid"),
+    "user": os.getenv("DB_MONITOREO_USER", "FPorta"),
+    "password": os.getenv("DB_MONITOREO_PASS", "portaf2024")
 }
 
 # ======================================================

@@ -26,4 +26,4 @@ EXPOSE 8501
 
 # Comando para ejecutar la aplicación
 # Usamos 0.0.0.0 para que sea accesible desde fuera del contenedor
-CMD ["streamlit", "run", "analisis_transbordos_streamlit.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "analisis_transbordos_streamlit.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.baseUrlPath=/monitoreo_vmt/transbordos"]

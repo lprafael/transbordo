@@ -897,6 +897,38 @@ if 'df_linked' in st.session_state:
         st.plotly_chart(fig, use_container_width=True)
         
         st.dataframe(resumen_empresa, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        st.subheader("🔍 Detalle de Interacciones por Empresa")
+        
+        # Obtenemos todas las empresas involucradas (tanto como origen como destino)
+        empresas_disponibles = set(df['empresa_transbordo'].dropna().unique()).union(set(df['empresa_madre'].dropna().unique()))
+        
+        empresa_seleccionada = st.selectbox(
+            "Seleccionar Empresa para ver detalles de transbordo:",
+            options=sorted(list(empresas_disponibles)),
+            index=None,
+            placeholder="Elija una empresa..."
+        )
+        
+        if empresa_seleccionada:
+            st.markdown(f"#### Análisis para: **{empresa_seleccionada}**")
+            col_det1, col_det2 = st.columns(2)
+            
+            with col_det1:
+                st.markdown(f"**Origen de los pasajeros**<br>¿De qué empresas vienen para subir a {empresa_seleccionada}?", unsafe_allow_html=True)
+                df_destino = df[df['empresa_transbordo'] == empresa_seleccionada].copy()
+                df_destino['empresa_madre'] = df_destino['empresa_madre'].fillna('Sin Madre / Desconocida')
+                origen_counts = df_destino.groupby('empresa_madre').size().reset_index(name='Cantidad').sort_values('Cantidad', ascending=False)
+                origen_counts.columns = ['Empresa Origen (Madre)', 'Cantidad']
+                st.dataframe(origen_counts, use_container_width=True, hide_index=True)
+                
+            with col_det2:
+                st.markdown(f"**Destino de los pasajeros**<br>¿Hacia qué empresas van luego de iniciar viaje en {empresa_seleccionada}?", unsafe_allow_html=True)
+                df_origen = df[df['empresa_madre'] == empresa_seleccionada]
+                destino_counts = df_origen.groupby('empresa_transbordo').size().reset_index(name='Cantidad').sort_values('Cantidad', ascending=False)
+                destino_counts.columns = ['Empresa Destino (Transbordo)', 'Cantidad']
+                st.dataframe(destino_counts, use_container_width=True, hide_index=True)
     
     # ======================================================
     # TAB 3: MATRIZ DE TRANSBORDOS

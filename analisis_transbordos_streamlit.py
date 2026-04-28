@@ -1040,6 +1040,12 @@ if 'df_linked' in st.session_state:
             )
         
         df_filtrado = df.copy()
+        
+        # Mapear EPS para mejor visualización
+        eps_map = {'0002': 'TDP', '0003': 'EPAS'}
+        df_filtrado['EPS Origen'] = df_filtrado['entidad_madre'].map(eps_map).fillna('Desconocida')
+        df_filtrado['EPS Destino'] = df_filtrado['entidad_transbordo'].map(eps_map).fillna('Desconocida')
+        
         if filtro_empresa:
             df_filtrado = df_filtrado[df_filtrado['empresa_transbordo'].isin(filtro_empresa)]
         if filtro_clasificacion:
@@ -1047,9 +1053,9 @@ if 'df_linked' in st.session_state:
         
         # Seleccionar columnas relevantes
         columnas_mostrar = [
-            'serialmediopago', 'fecha_transbordo', 'empresa_transbordo', 
-            'empresa_madre', 'servicio_transbordo', 'clasificacion_transbordo',
-            'tipo_transbordo', 'tipo_descuento', 'montoevento_transbordo', 'monto_ahorrado', 'tipotransporte', 'intervalo', 'numerotransbordos'
+            'serialmediopago', 'fecha_transbordo', 'empresa_transbordo', 'EPS Destino',
+            'empresa_madre', 'EPS Origen', 'servicio_transbordo', 'clasificacion_transbordo',
+            'tipo_transbordo', 'tipo_descuento', 'montoevento_transbordo', 'monto_ahorrado', 'tipotransporte', 'intervalo'
         ]
         
         st.dataframe(

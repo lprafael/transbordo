@@ -919,15 +919,17 @@ if 'df_linked' in st.session_state:
                 st.markdown(f"**Origen de los pasajeros**<br>¿De qué empresas vienen para subir a {empresa_seleccionada}?", unsafe_allow_html=True)
                 df_destino = df[df['empresa_transbordo'] == empresa_seleccionada].copy()
                 df_destino['empresa_madre'] = df_destino['empresa_madre'].fillna('Sin Madre / Desconocida')
-                origen_counts = df_destino.groupby('empresa_madre').size().reset_index(name='Cantidad').sort_values('Cantidad', ascending=False)
-                origen_counts.columns = ['Empresa Origen (Madre)', 'Cantidad']
+                df_destino['eps_origen'] = df_destino['entidad_madre'].map({'0002': 'TDP', '0003': 'EPAS'}).fillna('Desconocida')
+                origen_counts = df_destino.groupby(['empresa_madre', 'eps_origen']).size().reset_index(name='Cantidad').sort_values('Cantidad', ascending=False)
+                origen_counts.columns = ['Empresa Origen (Madre)', 'EPS Origen', 'Cantidad']
                 st.dataframe(origen_counts, use_container_width=True, hide_index=True)
                 
             with col_det2:
                 st.markdown(f"**Destino de los pasajeros**<br>¿Hacia qué empresas van luego de iniciar viaje en {empresa_seleccionada}?", unsafe_allow_html=True)
-                df_origen = df[df['empresa_madre'] == empresa_seleccionada]
-                destino_counts = df_origen.groupby('empresa_transbordo').size().reset_index(name='Cantidad').sort_values('Cantidad', ascending=False)
-                destino_counts.columns = ['Empresa Destino (Transbordo)', 'Cantidad']
+                df_origen = df[df['empresa_madre'] == empresa_seleccionada].copy()
+                df_origen['eps_destino'] = df_origen['entidad_transbordo'].map({'0002': 'TDP', '0003': 'EPAS'}).fillna('Desconocida')
+                destino_counts = df_origen.groupby(['empresa_transbordo', 'eps_destino']).size().reset_index(name='Cantidad').sort_values('Cantidad', ascending=False)
+                destino_counts.columns = ['Empresa Destino (Transbordo)', 'EPS Destino', 'Cantidad']
                 st.dataframe(destino_counts, use_container_width=True, hide_index=True)
     
     # ======================================================

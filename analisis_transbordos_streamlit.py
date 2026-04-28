@@ -1084,14 +1084,14 @@ if 'df_linked' in st.session_state:
         df_geo_heatmap = df[df['latitud_transbordo'].notna() & df['longitud_transbordo'].notna()].copy()
         
         if len(df_geo_heatmap) > 0:
-            fig_heat = px.density_mapbox(
+            fig_heat = px.density_map(
                 df_geo_heatmap.head(2000),
                 lat='latitud_transbordo',
                 lon='longitud_transbordo',
                 radius=10,
                 center=dict(lat=df_geo_heatmap['latitud_transbordo'].mean(), lon=df_geo_heatmap['longitud_transbordo'].mean()),
                 zoom=11,
-                mapbox_style="open-street-map",
+                map_style="open-street-map",
                 height=700
             )
             fig_heat.update_layout(margin={"r":0,"t":0,"l":0,"b":0})
@@ -1150,14 +1150,14 @@ if 'df_linked' in st.session_state:
             titulo_mapa = "Densidad: Segundo Beneficio de Transbordo"
         
         if len(data_mapa) > 0:
-            fig_det = px.density_mapbox(
+            fig_det = px.density_map(
                 data_mapa.head(2000),
                 lat=lat_col,
                 lon=lon_col,
                 radius=12,
                 center=dict(lat=data_mapa[lat_col].mean(), lon=data_mapa[lon_col].mean()),
                 zoom=11,
-                mapbox_style="open-street-map",
+                map_style="open-street-map",
                 color_continuous_scale=color_scale,
                 height=700
             )
